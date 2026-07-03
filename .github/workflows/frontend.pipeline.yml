@@ -1,0 +1,75 @@
+name: frontend.pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'frontend/**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_ROLE_ARN: arn:aws:iam::651146012268:role/pipeline-oidc-role
+  AWS_REGION: eu-west-1
+  S3_BUCKET: julmosport-web-frontend-prod-euwest1-s3
+  CLOUDFRONT_DIST_ID: E30CFFCDUSF4ZN
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      build-path: ${{ steps.build.outputs.build-path }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install # npm ci # Use npm ci for clean install in CI environments instead of npm install
+        working-directory: ./frontend
+
+      - name: Build React application
+        run: npm run build
+        working-directory: ./frontend
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: ./frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      # This will require manual approval if you set up the environment in GitHub
+      # and enable "Required reviewers" for it.
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: ./frontend/dist
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy build artifacts to S3
+        run: aws s3 sync ./frontend/dist s3://${{ env.S3_BUCKET }} --delete
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ env.CLOUDFRONT_DIST_ID }} \
+            --paths "/*"
